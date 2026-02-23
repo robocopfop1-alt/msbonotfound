@@ -1,173 +1,191 @@
-import telebot
-import requests
-import random
-import time
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from queue import Queue
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
-# ТВОЙ ТОКЕН (уже вставил)
-TOKEN = "8304283330:AAEs_c8xMUK_OfBvqeNZNx5_Btf8EgPqgbc"
-bot = telebot.TeleBot(TOKEN)
+# ========== НАСТРОЙКИ ==========
+BOT_TOKEN = "8725062823:AAH3jJDkKWlJQVi8_loRIUUk3R1CLbXtM-g"  # Ваш токен
+ADMIN_ID = 7021546295  # Ваш Telegram ID
+PAYMENT_LINK = "t.me/send?start=IVHDcTIbUZpX"  # Ссылка на оплату
+SUPPORT_USERNAME = "incelbec"  # Юзернейм саппорта (без @)
+# ===============================
 
-class ReportBot:
-    def __init__(self):
-        self.proxy_list = []
-        self.active_targets = {}
-        self.report_queue = Queue()
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-            "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
-        ]
-        self.report_reasons = [
-            "spam", "violence", "pornography", "child_abuse", 
-            "illegal_goods", "personal_data", "scam", "impersonation"
-        ]
-        self.load_proxies()
-        
-    def load_proxies(self):
-        # Загружаем прокси с публичных источников
-        try:
-            response = requests.get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all")
-            self.proxy_list = [{"http": f"http://{p}", "https": f"http://{p}"} for p in response.text.strip().split('\r\n')]
-        except:
-            self.proxy_list = [{"http": "http://8.219.136.165:80", "https": "http://8.219.136.165:80"}]  # Запасные
-    
-    def send_report(self, username, proxy):
-        headers = {
-            "User-Agent": random.choice(self.user_agents),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
-        }
-        
-        # Формируем жалобу через поддержку
-        data = {
-            "message": f"Report user @{username} for {random.choice(self.report_reasons)}",
-            "username": username,
-            "reason": random.choice(self.report_reasons),
-            "protocol": "telegram"
-        }
-        
-        try:
-            # Пробуем разные эндпоинты
-            endpoints = [
-                "https://telegram.org/support",
-                "https://telegram.org/faq/report",
-                "https://t.me/support"
-            ]
-            
-            for endpoint in endpoints:
-                response = requests.post(
-                    endpoint,
-                    data=data,
-                    headers=headers,
-                    proxies=proxy,
-                    timeout=5
-                )
-                if response.status_code in [200, 302, 429]:
-                    return True
-        except:
-            pass
-        return False
-    
-    def attack_loop(self, username, chat_id):
-        total_reports = 0
-        while self.active_targets.get(username, False):
-            try:
-                # 10 жалоб за 5 секунд
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    futures = []
-                    for _ in range(10):
-                        if self.proxy_list:
-                            proxy = random.choice(self.proxy_list)
-                            futures.append(executor.submit(self.send_report, username, proxy))
-                        time.sleep(0.5)  # Задержка между жалобами в потоке
-                    
-                    successful = sum(1 for f in futures if f.result())
-                    total_reports += successful
-                    
-                    bot.send_message(
-                        chat_id, 
-                        f"⚡ Отправлено {successful} жалоб на @{username}\n"
-                        f"📊 Всего: {total_reports}\n"
-                        f"🎯 Статус: атака продолжается..."
-                    )
-                
-                time.sleep(1)  # Пауза между пакетами
-                
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ Ошибка: {str(e)[:50]}")
-                continue
-        
-        bot.send_message(chat_id, f"✅ Атака на @{username} остановлена! Всего жалоб: {total_reports}")
-    
-    def start_attack(self, username, chat_id):
-        if username in self.active_targets and self.active_targets[username]:
-            return "⚠️ Атака уже запущена!"
-        
-        self.active_targets[username] = True
-        thread = threading.Thread(target=self.attack_loop, args=(username, chat_id))
-        thread.daemon = True
-        thread.start()
-        return f"🔥 Запустил атаку на @{username}\n📌 Жалобы: 10/5сек\n🔄 Буду долбить пока не ляжет!"
-    
-    def stop_attack(self, username):
-        if username in self.active_targets:
-            self.active_targets[username] = False
-            return f"🛑 Остановил атаку на @{username}"
-        return "❌ Атака не найдена"
+# Включаем логирование
+logging.basicConfig(level=logging.INFO)
 
-reporter = ReportBot()
+# Инициализация бота и диспетчера
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
-@bot.message_handler(commands=['start'])
-def start_cmd(message):
-    bot.reply_to(message, 
-        "🤖 Telegram Report Bot v2.0\n\n"
-        "Команды:\n"
-        "/attack @username - начать атаку\n"
-        "/stop @username - остановить\n"
-        "/status - статистика\n"
-        "/proxies - кол-во прокси\n\n"
-        "⚡ 10 жалоб в 5 секунд"
+# Словарь для хранения подписок: {user_id: дата_окончания}
+# В реальном проекте лучше использовать базу данных (SQLite/PostgreSQL)
+subscriptions = {}
+
+# Машина состояний для админ-панели
+class AdminStates(StatesGroup):
+    waiting_for_username = State()  # Ждем юзернейм для выдачи подписки
+
+# ========== ФУНКЦИИ-ЗАГЛУШКИ (ОПАСНЫЙ ФУНКЦИОНАЛ) ==========
+async def fake_report_user(target_username: str, admin_id: int):
+    """
+    ИМИТАЦИЯ РАБОТЫ.
+    В реальности тут должен быть код для отправки жалоб через Telegram,
+    но это нарушает правила. Поэтому просто пишем в логи.
+    """
+    await bot.send_message(
+        admin_id,
+        f"⚠️ Демо-режим: Попытка начать жалобы на пользователя @{target_username}.\n"
+        f"❌ Реальный 'снос' не выполнен, так как это нарушает правила Telegram.\n"
+        f"ℹ️ Если бы это был реальный код, здесь была бы логика отправки 100+ жалоб."
+    )
+    # Здесь могла бы быть ваша логика, но бот будет забанен.
+    return True
+# ===========================================================
+
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
+
+# Команда /start
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    # Главное меню с кнопками
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🍕 Заказать пиццу", callback_data="order_pizza")],
+        [InlineKeyboardButton(text="⭐ Оформить подписку", callback_data="subscribe")],
+        [InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")]
+    ])
+    
+    await message.answer(
+        "Приветствую в GREATPIZA 🍕\n\n"
+        "Чтобы заказать пиццу используйте кнопки ниже.",
+        reply_markup=keyboard
     )
 
-@bot.message_handler(commands=['attack'])
-def attack_cmd(message):
-    try:
-        username = message.text.split()[1].replace('@', '')
-        response = reporter.start_attack(username, message.chat.id)
-        bot.reply_to(message, response)
-    except:
-        bot.reply_to(message, "❌ Формат: /attack @username")
+# ========== ОБРАБОТЧИКИ КНОПОК ==========
 
-@bot.message_handler(commands=['stop'])
-def stop_cmd(message):
-    try:
-        username = message.text.split()[1].replace('@', '')
-        response = reporter.stop_attack(username)
-        bot.reply_to(message, response)
-    except:
-        bot.reply_to(message, "❌ Формат: /stop @username")
+@dp.callback_query(F.data == "order_pizza")
+async def process_order_pizza(callback: CallbackQuery):
+    await callback.answer()  # Убираем "часики" на кнопке
+    await callback.message.answer(
+        "🍕 Раздел заказа пиццы временно находится в разработке.\n"
+        "Пожалуйста, оформите подписку для доступа к заказу."
+    )
 
-@bot.message_handler(commands=['status'])
-def status_cmd(message):
-    active = [f"@{u}" for u, active in reporter.active_targets.items() if active]
-    if active:
-        bot.reply_to(message, f"🎯 Активные цели: {', '.join(active)}")
-    else:
-        bot.reply_to(message, "😴 Нет активных атак")
+@dp.callback_query(F.data == "subscribe")
+async def process_subscribe(callback: CallbackQuery):
+    await callback.answer()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить подписку", url=PAYMENT_LINK)],
+        [InlineKeyboardButton(text="✅ Я оплатил", callback_data="paid")]
+    ])
+    await callback.message.answer(
+        "⭐ Оформление подписки\n\n"
+        "1. Нажмите кнопку ниже для оплаты.\n"
+        "2. После оплаты нажмите 'Я оплатил'.",
+        reply_markup=keyboard
+    )
 
-@bot.message_handler(commands=['proxies'])
-def proxies_cmd(message):
-    bot.reply_to(message, f"🔌 Прокси загружено: {len(reporter.proxy_list)}")
+@dp.callback_query(F.data == "paid")
+async def process_paid(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        f"✅ Спасибо за оплату!\n"
+        f"Обратитесь в поддержку: @{SUPPORT_USERNAME} для активации подписки."
+    )
 
-# Запускаем бота
+@dp.callback_query(F.data == "support")
+async def process_support(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        f"🆘 Служба поддержки: @{SUPPORT_USERNAME}\n"
+        "Напишите ему напрямую для решения вопросов."
+    )
+
+# ========== АДМИН-ПАНЕЛЬ (ДЛЯ ВАС) ==========
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Доступ запрещен.")
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Выдать подписку по юзернейму", callback_data="admin_give_sub")],
+        [InlineKeyboardButton(text="📋 Список активных подписок", callback_data="admin_list_subs")]
+    ])
+    await message.answer("🔐 Админ-панель", reply_markup=keyboard)
+
+# Выдача подписки
+@dp.callback_query(F.data == "admin_give_sub")
+async def admin_give_sub_prompt(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.answer("Введите юзернейм пользователя (например, username):")
+    await state.set_state(AdminStates.waiting_for_username)
+
+@dp.message(AdminStates.waiting_for_username)
+async def admin_process_username(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    
+    username = message.text.strip().replace('@', '')  # Убираем @ если ввели
+    # Ищем пользователя по юзернейму (сложно в Telegram API без username)
+    # Упростим: будем считать, что подписка выдается на username как на строку
+    # В реальности нужно либо заставить пользователя написать боту, либо использовать user_id
+    
+    # Пытаемся найти user_id по username (только если пользователь взаимодействовал с ботом)
+    # Это упрощенный вариант: сохраняем подписку как "username: дата"
+    # Для полноценной работы нужна БД и связка username -> user_id
+    
+    # Выдаем подписку на 30 дней
+    expiry_date = datetime.now() + timedelta(days=30)
+    
+    # Сохраняем в наш "фейковый" словарь
+    # В реальности нужно хранить по user_id, но для демо - по username
+    subscriptions[username] = expiry_date
+    
+    await message.answer(f"✅ Подписка выдана пользователю @{username} до {expiry_date.strftime('%d.%m.%Y')}")
+    
+    # Теперь запускаем "фейковый снос" (просто уведомление)
+    await fake_report_user(username, ADMIN_ID)
+    
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_list_subs")
+async def admin_list_subs(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    await callback.answer()
+    
+    if not subscriptions:
+        await callback.message.answer("📭 Нет активных подписок.")
+        return
+    
+    text = "📋 Активные подписки:\n\n"
+    for username, expiry in subscriptions.items():
+        status = "✅" if expiry > datetime.now() else "❌"
+        text += f"{status} @{username} - до {expiry.strftime('%d.%m.%Y')}\n"
+    
+    await callback.message.answer(text)
+
+# Проверка подписки (пример)
+@dp.message()
+async def check_subscription(message: Message):
+    # Если сообщение не команда и не callback, просто игнорируем
+    pass
+
+# ========== ЗАПУСК БОТА ==========
+async def main():
+    print("Бот запущен и готов к работе!")
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
-    print("🤖 Бот запущен и готов к атакам!")
-    bot.infinity_polling()
+    asyncio.run(main())
