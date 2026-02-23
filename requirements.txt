@@ -5,3 +5,5 @@ charset-normalizer
 idna
 urllib3
 pysocks
+aiogram==3.3.0
+aiohttp==3.9.1
